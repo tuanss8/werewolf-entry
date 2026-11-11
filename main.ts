@@ -377,9 +377,19 @@ function decideSpeak(a: Analysis, rng: () => number, view: View, maxChars: numbe
   const others = othersAlive(a);
   let text: string | null = null;
   if (a.role === 'werewolf') {
-    const suspect = mostSuspicious(a, rng, others.filter((s) => s !== a.partner));
+    // A wolf must speak exactly like a villager: push a suspect WITH A REASON.
+    // Only deflect when the partner is the village's top suspect; otherwise
+    // argue a case against a villager the same way a villager would. Pure
+    // agreement ("I agree with the doubt") reads as evasive to the other
+    // players and got wolves exiled early (round 1 wolf score 133).
     const leader = voteLeader(a, view);
-    text = wolfStatement(a, rng, suspect, leader);
+    const suspect = mostSuspicious(a, rng, others.filter((s) => s !== a.partner));
+    const partnerHot = (leader !== null && leader === a.partner) || (suspect !== null && suspect === a.partner);
+    if (partnerHot) {
+      text = wolfStatement(a, rng, suspect, leader);
+    } else {
+      text = villagerStatement(a, rng, suspect);
+    }
   } else if (a.role === 'seer') {
     const wolf = a.knownWolves.find((s) => a.alive.includes(s));
     if (wolf !== undefined) {
@@ -441,7 +451,7 @@ function decideVote(a: Analysis, rng: () => number, options: Seat[]): Record<str
   return { decision: 'vote', target: null };
 }
 
-function decideKill(a: Analysis, rng: () => number, view: View, options: Seat[]): Record<string, unknown> {
+function decideKill(a: Analysis, rng: () => number, view: View, options: Seat[], trialSeed: string, game: number): Record<string, unknown> {
   if (options.length === 0) return { decision: 'kill', target: null };
   // Coordinate: if my partner already named a target tonight, agree with them.
   if (view.wolfVotes) {
@@ -467,7 +477,12 @@ function decideKill(a: Analysis, rng: () => number, view: View, options: Seat[])
   }
   // Priority 3: the loudest villager (they drive the village), but not always —
   // sometimes take a quiet one so the doctor cannot guess the target.
-  if (rng() < 0.7) {
+  // The 70/30 split is decided by a hash of (trial seed, game, day) so both
+  // wolves compute the SAME choice even when they decide simultaneously and
+  // have not yet seen each other's vote; an rng() call here could desync
+  // them because their rng states diverge after different speak/vote calls.
+  const splitHash = hash32(`${trialSeed}:${game}:${view.day}`);
+  if (splitHash % 10 < 7) {
     const loud = loudest(a, villagers);
     if (loud !== null) return { decision: 'kill', target: loud };
   }
@@ -508,7 +523,7 @@ function decide(trialSeed: string, p: Pending): Record<string, unknown> {
       return { game: p.game, ...act };
     }
     case 'vote': return { game: p.game, ...decideVote(a, rng, options) };
-    case 'kill': return { game: p.game, ...decideKill(a, rng, view, options) };
+    case 'kill': return { game: p.game, ...decideKill(a, rng, view, options, trialSeed, p.game) };
     case 'protect': return { game: p.game, ...decideProtect(a, rng, view, options) };
     case 'inspect': return { game: p.game, ...decideInspect(a, rng, options) };
   }
